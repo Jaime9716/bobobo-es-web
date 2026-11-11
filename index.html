@@ -1,0 +1,209 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Bobobo GBA en español</title>
+<style>
+  :root {
+    --bg: #14121a; --panel: #1f1c28; --text: #f1eef7; --muted: #a49fb3;
+    --accent: #ffcc33; --ok: #5fd38d; --err: #ff6b6b; --border: #34304180;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; }
+  body {
+    background: var(--bg); color: var(--text);
+    font: 16px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+    display: flex; flex-direction: column; align-items: center;
+  }
+  header { text-align: center; padding: 24px 16px 8px; }
+  h1 { margin: 0; font-size: 1.6rem; color: var(--accent); }
+  header p { margin: 4px 0 0; color: var(--muted); }
+  main { width: 100%; max-width: 760px; padding: 16px; flex: 1; }
+  .card {
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: 12px; padding: 20px;
+  }
+  .drop {
+    border: 2px dashed var(--muted); border-radius: 10px; padding: 32px 16px;
+    text-align: center; cursor: pointer; transition: border-color .15s, background .15s;
+  }
+  .drop:hover, .drop.over { border-color: var(--accent); background: #ffcc3310; }
+  .drop strong { color: var(--accent); }
+  .drop small { display: block; color: var(--muted); margin-top: 8px; }
+  input[type=file] { display: none; }
+  #estado { margin-top: 14px; min-height: 1.5em; }
+  #estado.ok { color: var(--ok); } #estado.err { color: var(--err); }
+  .info { color: var(--muted); font-size: .9rem; margin-top: 16px; }
+  .info li { margin: 4px 0; }
+  #juego-wrap { display: none; width: 100%; max-width: 960px; padding: 0 16px 16px; }
+  #juego { width: 100%; aspect-ratio: 3 / 2; max-height: 80vh; background: #000; border-radius: 8px; overflow: hidden; }
+  .barra { display: flex; gap: 8px; justify-content: space-between; align-items: center; margin-bottom: 8px; flex-wrap: wrap; }
+  button {
+    background: var(--accent); color: #1a1500; border: 0; border-radius: 8px;
+    padding: 8px 14px; font-weight: 600; cursor: pointer; font-size: .95rem;
+  }
+  button.sec { background: transparent; color: var(--text); border: 1px solid var(--muted); }
+  footer { color: var(--muted); font-size: .8rem; padding: 16px; text-align: center; }
+  body.jugando main { display: none; }
+  body.jugando #juego-wrap { display: block; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Bobobo-bo Bo-bobo · 9 Kyoku Senshi Gag Yuugou</h1>
+  <p>Traducción al español para Game Boy Advance, jugable en el navegador</p>
+</header>
+
+<main>
+  <div class="card">
+    <label class="drop" id="drop" for="archivo">
+      <strong>Elige o arrastra aquí tu ROM</strong>
+      <small>La ROM japonesa original (.gba). El parche en español se aplica automáticamente.<br>
+      También vale una ROM ya parcheada.</small>
+    </label>
+    <input type="file" id="archivo" accept=".gba,.zip,application/octet-stream">
+    <div id="estado"></div>
+    <ul class="info">
+      <li>La ROM no sale de tu equipo: se lee y se parchea dentro del navegador.</li>
+      <li>Las partidas guardadas se quedan en este navegador.</li>
+      <li>Controles por defecto: flechas = cruceta, <b>X</b> = A, <b>Z</b> = B, <b>A</b>/<b>S</b> = L/R, <b>Enter</b> = Start, <b>V</b> = Select. Se pueden cambiar en el menú del emulador. Admite mando.</li>
+    </ul>
+  </div>
+</main>
+
+<section id="juego-wrap">
+  <div class="barra">
+    <span id="titulo-juego"></span>
+    <button class="sec" onclick="location.reload()">Cambiar ROM</button>
+  </div>
+  <div id="juego"></div>
+</section>
+
+<footer>Proyecto de fans sin ánimo de lucro. El juego pertenece a Hudson Soft / Konami. Esta página no incluye la ROM: usa tu propia copia.</footer>
+
+<script>
+const SHA_ORIGINAL  = "0d9ce4e794327c667c98cae55d8efc0d1319f2fe577df585287c06be33f784c3";
+const SHA_PARCHEADA = "663a73efea4aa5835b9cceb230fb1bfb8ce0aae28d6768179cdf634c1677a73a";
+const EJS_CDN = "https://cdn.emulatorjs.org/stable/data/";
+
+const $ = (id) => document.getElementById(id);
+function estado(msg, tipo = "") { const e = $("estado"); e.textContent = msg; e.className = tipo; }
+
+async function sha256(buf) {
+  if (!crypto.subtle) return null; // contexto no seguro (p. ej. file://)
+  const h = await crypto.subtle.digest("SHA-256", buf);
+  return [...new Uint8Array(h)].map(b => b.toString(16).padStart(2, "0")).join("");
+}
+
+// Aplica un parche IPS (con soporte RLE y truncado).
+function aplicarIPS(rom, ips) {
+  const p = new Uint8Array(ips);
+  const cab = String.fromCharCode(...p.slice(0, 5));
+  if (cab !== "PATCH") throw new Error("El parche IPS no es válido.");
+  let out = new Uint8Array(rom);
+  let i = 5;
+  const asegurar = (n) => { if (n > out.length) { const b = new Uint8Array(n); b.set(out); out = b; } };
+  while (i < p.length) {
+    if (p[i] === 0x45 && p[i+1] === 0x4f && p[i+2] === 0x46 && (i + 3 === p.length || i + 6 === p.length)) {
+      if (i + 6 === p.length) out = out.slice(0, (p[i+3] << 16) | (p[i+4] << 8) | p[i+5]);
+      return out;
+    }
+    const off = (p[i] << 16) | (p[i+1] << 8) | p[i+2];
+    const tam = (p[i+3] << 8) | p[i+4];
+    i += 5;
+    if (tam === 0) {
+      const n = (p[i] << 8) | p[i+1], v = p[i+2];
+      i += 3; asegurar(off + n); out.fill(v, off, off + n);
+    } else {
+      asegurar(off + tam); out.set(p.subarray(i, i + tam), off); i += tam;
+    }
+  }
+  throw new Error("El parche IPS está incompleto (falta EOF).");
+}
+
+async function cargarZip(file) {
+  // Extrae el primer .gba de un zip usando DecompressionStream (sin librerías).
+  const buf = new Uint8Array(await file.arrayBuffer());
+  const dv = new DataView(buf.buffer);
+  let i = 0;
+  while (i + 30 < buf.length && dv.getUint32(i, true) === 0x04034b50) {
+    const metodo = dv.getUint16(i + 8, true);
+    const csize = dv.getUint32(i + 18, true);
+    const nlen = dv.getUint16(i + 26, true), xlen = dv.getUint16(i + 28, true);
+    const nombre = new TextDecoder().decode(buf.subarray(i + 30, i + 30 + nlen));
+    const ini = i + 30 + nlen + xlen;
+    if (/\.gba$/i.test(nombre)) {
+      const datos = buf.subarray(ini, ini + csize);
+      if (metodo === 0) return datos.slice().buffer;
+      if (metodo === 8) {
+        const s = new Blob([datos]).stream().pipeThrough(new DecompressionStream("deflate-raw"));
+        return await new Response(s).arrayBuffer();
+      }
+      throw new Error("Formato de compresión del zip no soportado.");
+    }
+    i = ini + csize;
+  }
+  throw new Error("No se encontró ningún .gba dentro del zip.");
+}
+
+async function procesar(file) {
+  try {
+    estado("Leyendo la ROM…");
+    let rom = /\.zip$/i.test(file.name) ? await cargarZip(file) : await file.arrayBuffer();
+    const hash = await sha256(rom);
+    let final;
+    if (hash === SHA_PARCHEADA) {
+      final = new Uint8Array(rom);
+      estado("ROM ya traducida detectada. Arrancando…", "ok");
+    } else {
+      if (hash && hash !== SHA_ORIGINAL) {
+        const seguir = confirm("Esta ROM no coincide con la versión japonesa esperada (BB9J). " +
+          "El parche puede no funcionar bien. ¿Aplicarlo de todos modos?");
+        if (!seguir) { estado("Cancelado. Elige la ROM japonesa original.", "err"); return; }
+      }
+      estado("Aplicando el parche en español…");
+      const r = await fetch("bobobo_es.ips");
+      if (!r.ok) throw new Error("No se pudo descargar bobobo_es.ips.");
+      final = aplicarIPS(rom, await r.arrayBuffer());
+      const h2 = await sha256(final);
+      if (h2 && hash === SHA_ORIGINAL && h2 !== SHA_PARCHEADA) throw new Error("El parche se aplicó, pero el resultado no es el esperado.");
+      estado("Parche aplicado correctamente. Arrancando…", "ok");
+    }
+    arrancar(final);
+  } catch (e) {
+    console.error(e);
+    estado("Error: " + e.message, "err");
+  }
+}
+
+function arrancar(bytes) {
+  const url = URL.createObjectURL(new Blob([bytes], { type: "application/octet-stream" }));
+  document.body.classList.add("jugando");
+  $("titulo-juego").textContent = "Bobobo (español)";
+  window.EJS_player = "#juego";
+  window.EJS_core = "gba";
+  window.EJS_gameName = "bobobo_es";
+  window.EJS_gameUrl = url;
+  window.EJS_pathtodata = EJS_CDN;
+  window.EJS_language = "es-ES";
+  window.EJS_startOnLoaded = true;
+  window.EJS_color = "#ffcc33";
+  const s = document.createElement("script");
+  s.src = EJS_CDN + "loader.js";
+  s.onerror = () => { document.body.classList.remove("jugando"); estado("No se pudo cargar el emulador. ¿Hay conexión a Internet?", "err"); };
+  document.body.appendChild(s);
+}
+
+$("archivo").addEventListener("change", (e) => { const f = e.target.files[0]; if (f) procesar(f); });
+const drop = $("drop");
+["dragenter", "dragover"].forEach(t => drop.addEventListener(t, (e) => { e.preventDefault(); drop.classList.add("over"); }));
+["dragleave", "drop"].forEach(t => drop.addEventListener(t, (e) => { e.preventDefault(); drop.classList.remove("over"); }));
+drop.addEventListener("drop", (e) => { const f = e.dataTransfer.files[0]; if (f) procesar(f); });
+
+if (location.protocol === "file:") {
+  estado("Abre esta página con un servidor local (ejecuta servir.bat), no con doble clic.", "err");
+}
+</script>
+</body>
+</html>
